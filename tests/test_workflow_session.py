@@ -145,6 +145,49 @@ def test_add_manual_chapter_delegates_to_workflow_and_ready_to_resolve(tmp_path:
     assert session.confirmed_chapters == (chapter,)
 
 
+def test_update_confirmed_chapter_replaces_existing_chapter_through_workflow(tmp_path: Path):
+    first = Chapter.from_page_number("Chapter 1", 1)
+    replacement = Chapter.from_page_number("Chapter 1 Edited", 2, level=2)
+    workflow = FakeWorkflow(
+        analysis_result=AnalysisResult(tmp_path / "book.pdf", 10, {}, (_candidate("Chapter 1", 0),)),
+        confirmation_result=ChapterConfirmationResult((first,), (), ()),
+        manual_chapter=replacement,
+    )
+    session = WorkflowSession(workflow=workflow)
+    session.analyze(tmp_path / "book.pdf")
+    session.confirm((ChapterConfirmationDecision.accept(_candidate("Chapter 1", 0)),))
+
+    result = session.update_confirmed_chapter(
+        0,
+        title="Chapter 1 Edited",
+        start_page_number=2,
+        level=2,
+    )
+
+    assert result.accepted_chapters == (replacement,)
+    assert workflow.calls[-1] == ("create_manual_chapter", "Chapter 1 Edited", 2, 2, 10)
+    assert session.state is SessionState.READY_TO_RESOLVE
+
+
+def test_remove_confirmed_chapter_deletes_selected_chapter_without_touching_candidates(tmp_path: Path):
+    first = Chapter.from_page_number("Chapter 1", 1)
+    second = Chapter.from_page_number("Chapter 2", 5)
+    candidate = _candidate("Chapter 1", 0)
+    workflow = FakeWorkflow(
+        analysis_result=AnalysisResult(tmp_path / "book.pdf", 10, {}, (candidate,)),
+        confirmation_result=ChapterConfirmationResult((first, second), (), ()),
+    )
+    session = WorkflowSession(workflow=workflow)
+    session.analyze(tmp_path / "book.pdf")
+    session.confirm((ChapterConfirmationDecision.accept(candidate),))
+
+    result = session.remove_confirmed_chapter(0)
+
+    assert result.accepted_chapters == (second,)
+    assert session.candidates == (candidate,)
+    assert session.state is SessionState.READY_TO_RESOLVE
+
+
 def test_batch_confirm_delegates_to_workflow_and_stores_confirmation_result(tmp_path: Path):
     candidate_1 = _candidate("Chapter 1", 0)
     candidate_2 = _candidate("Chapter 2", 3)

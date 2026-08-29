@@ -96,6 +96,24 @@ def test_adapter_add_manual_chapter_delegates_to_session():
     assert session.calls == [("add_manual_chapter", "Appendix", 9, 2)]
 
 
+def test_adapter_update_confirmed_chapter_delegates_to_session():
+    session = FakeSession()
+    adapter = GuiWorkflowAdapter(session=session)
+
+    adapter.update_confirmed_chapter(0, title="Chapter 1 Edited", start_page_number=2, level=2)
+
+    assert session.calls == [("update_confirmed_chapter", 0, "Chapter 1 Edited", 2, 2)]
+
+
+def test_adapter_remove_confirmed_chapter_delegates_to_session():
+    session = FakeSession()
+    adapter = GuiWorkflowAdapter(session=session)
+
+    adapter.remove_confirmed_chapter(1)
+
+    assert session.calls == [("remove_confirmed_chapter", 1)]
+
+
 def test_adapter_progress_listener_receives_existing_progress_event():
     events: list[ProgressEvent] = []
     session = FakeSession()
@@ -165,6 +183,19 @@ class FakeSession:
         level: int = 1,
     ):
         self.calls.append(("add_manual_chapter", title, start_page_number, level))
+
+    def update_confirmed_chapter(
+        self,
+        index: int,
+        *,
+        title: str,
+        start_page_number: int,
+        level: int = 1,
+    ):
+        self.calls.append(("update_confirmed_chapter", index, title, start_page_number, level))
+
+    def remove_confirmed_chapter(self, index: int):
+        self.calls.append(("remove_confirmed_chapter", index))
 
 
 class FakeWorkflow:

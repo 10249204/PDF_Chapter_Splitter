@@ -65,6 +65,24 @@ class GuiWorkflowAdapter:
             level=level,
         )
 
+    def update_confirmed_chapter(
+        self,
+        index: int,
+        *,
+        title: str,
+        start_page_number: int,
+        level: int = 1,
+    ):
+        return self.session.update_confirmed_chapter(
+            index,
+            title=title,
+            start_page_number=start_page_number,
+            level=level,
+        )
+
+    def remove_confirmed_chapter(self, index: int):
+        return self.session.remove_confirmed_chapter(index)
+
     def confirm(self, decisions: Iterable[Any]):
         return self.session.confirm(tuple(decisions))
 

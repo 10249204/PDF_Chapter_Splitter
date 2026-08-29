@@ -204,6 +204,74 @@ class WorkflowSession:
         self.error = None
         return self.confirmation_result
 
+    def update_confirmed_chapter(
+        self,
+        index: int,
+        *,
+        title: str,
+        start_page_number: int,
+        level: int = 1,
+    ) -> ChapterConfirmationResult:
+        """Replace one confirmed chapter through explicit user editing."""
+
+        self._ensure_state(SessionState.READY_TO_RESOLVE, action="update a confirmed chapter")
+        if self.analysis_result is None:
+            self._fail_invalid_state("Cannot update a chapter before analysis data is available")
+        if index < 0 or index >= len(self.confirmed_chapters):
+            raise ValueError("confirmed chapter index is outside valid range")
+
+        self.state = SessionState.CONFIRMING
+        try:
+            replacement = self.workflow.create_manual_chapter(
+                title,
+                start_page_number,
+                level=level,
+                page_count=self.analysis_result.page_count,
+            )
+        except ApplicationError as exc:
+            self._mark_failed(exc)
+            raise
+        except ValueError as exc:
+            error = WorkflowError(
+                "Unable to update confirmed chapter",
+                stage=WorkflowStage.CONFIRMING,
+                cause=exc,
+            )
+            self._mark_failed(error)
+            raise error from exc
+
+        accepted_chapters = list(self.confirmed_chapters)
+        accepted_chapters[index] = replacement
+        self.confirmation_result = self._confirmation_result_with_chapters(tuple(accepted_chapters))
+        self.boundary_result = None
+        self.processing_result = None
+        self.state = SessionState.READY_TO_RESOLVE
+        self.error = None
+        return self.confirmation_result
+
+    def remove_confirmed_chapter(self, index: int) -> ChapterConfirmationResult:
+        """Remove one confirmed chapter after explicit user action."""
+
+        self._ensure_state(SessionState.READY_TO_RESOLVE, action="remove a confirmed chapter")
+        if index < 0 or index >= len(self.confirmed_chapters):
+            raise ValueError("confirmed chapter index is outside valid range")
+
+        accepted_chapters = tuple(
+            chapter
+            for chapter_index, chapter in enumerate(self.confirmed_chapters)
+            if chapter_index != index
+        )
+        self.confirmation_result = self._confirmation_result_with_chapters(accepted_chapters)
+        self.boundary_result = None
+        self.processing_result = None
+        self.state = (
+            SessionState.READY_TO_RESOLVE
+            if accepted_chapters
+            else SessionState.WAITING_FOR_CONFIRMATION
+        )
+        self.error = None
+        return self.confirmation_result
+
     def confirm(
         self,
         decisions: Iterable[ChapterConfirmationDecision],
@@ -364,6 +432,20 @@ class WorkflowSession:
         )
         self.error = None
         return result
+
+    def _confirmation_result_with_chapters(
+        self,
+        accepted_chapters: tuple[Chapter, ...],
+    ) -> ChapterConfirmationResult:
+        return ChapterConfirmationResult(
+            accepted_chapters=accepted_chapters,
+            rejected_candidates=(
+                ()
+                if self.confirmation_result is None
+                else self.confirmation_result.rejected_candidates
+            ),
+            outcomes=(() if self.confirmation_result is None else self.confirmation_result.outcomes),
+        )
 
     def _reset_for_new_input(self, input_path: Path) -> None:
         self.input_path = input_path
