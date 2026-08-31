@@ -210,6 +210,62 @@ def test_batch_confirm_delegates_to_workflow_and_stores_confirmation_result(tmp_
     assert session.confirmed_chapters == (chapter,)
 
 
+def test_accept_candidates_confirms_multiple_candidates_without_manual_chapter(tmp_path: Path):
+    candidate_1 = _candidate("Chapter 1", 0)
+    candidate_2 = _candidate("Chapter 2", 3)
+    candidate_3 = _candidate("Chapter 3", 7)
+    chapter_1 = Chapter.from_page_number("Chapter 1", 1)
+    chapter_2 = Chapter.from_page_number("Chapter 2", 4)
+    workflow = FakeWorkflow(
+        analysis_result=AnalysisResult(
+            tmp_path / "book.pdf",
+            10,
+            {},
+            (candidate_1, candidate_2, candidate_3),
+        ),
+        confirmation_result=ChapterConfirmationResult((chapter_1, chapter_2), (), ()),
+    )
+    session = WorkflowSession(workflow=workflow)
+    session.analyze(tmp_path / "book.pdf")
+
+    result = session.accept_candidates((candidate_1, candidate_2))
+
+    assert result.accepted_chapters == (chapter_1, chapter_2)
+    assert workflow.calls[-1] == (
+        "confirm",
+        (
+            ChapterConfirmationDecision.accept(candidate_1),
+            ChapterConfirmationDecision.accept(candidate_2),
+        ),
+        10,
+    )
+    assert session.state is SessionState.READY_TO_RESOLVE
+
+
+def test_reject_candidates_rejects_multiple_candidates_without_manual_chapter(tmp_path: Path):
+    candidate_1 = _candidate("Preface", 0)
+    candidate_2 = _candidate("Table of Contents", 2)
+    workflow = FakeWorkflow(
+        analysis_result=AnalysisResult(tmp_path / "book.pdf", 10, {}, (candidate_1, candidate_2)),
+        confirmation_result=ChapterConfirmationResult((), (candidate_1, candidate_2), ()),
+    )
+    session = WorkflowSession(workflow=workflow)
+    session.analyze(tmp_path / "book.pdf")
+
+    result = session.reject_candidates((candidate_1, candidate_2))
+
+    assert result.rejected_candidates == (candidate_1, candidate_2)
+    assert workflow.calls[-1] == (
+        "confirm",
+        (
+            ChapterConfirmationDecision.reject(candidate_1),
+            ChapterConfirmationDecision.reject(candidate_2),
+        ),
+        10,
+    )
+    assert session.state is SessionState.WAITING_FOR_CONFIRMATION
+
+
 def test_resolve_delegates_to_workflow_and_stores_segments(tmp_path: Path):
     chapter = Chapter.from_page_number("Chapter 1", 1)
     segment = SplitSegment("Chapter 1", 0, 10)

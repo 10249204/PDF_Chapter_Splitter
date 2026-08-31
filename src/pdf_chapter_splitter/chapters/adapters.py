@@ -9,6 +9,7 @@ from pdf_chapter_splitter.chapters.models import (
     ChapterCandidateSource,
     ChapterEvidence,
     ChapterEvidenceType,
+    ChapterStructureType,
     ManualChapterInput,
 )
 from pdf_chapter_splitter.chapters.outline_quality import OutlineQualityClassifier
@@ -39,7 +40,7 @@ class OutlineCandidateDetector:
                     start_page_index=item.page_index,
                     source=ChapterCandidateSource.OUTLINE,
                     confidence=quality.confidence,
-                    level=item.level,
+                    level=_semantic_level_for(quality.structure_type),
                     evidences=(outline_evidence, *quality.evidences),
                     structure_type=quality.structure_type,
                     quality_flags=quality.quality_flags,
@@ -92,6 +93,14 @@ def validate_chapter_candidates(
         if candidate.start_page_index in seen_page_indexes:
             raise ValueError("candidate start_page_index values must be unique")
         seen_page_indexes.add(candidate.start_page_index)
+
+
+def _semantic_level_for(structure_type: ChapterStructureType) -> int:
+    if structure_type is ChapterStructureType.SUBSECTION:
+        return 3
+    if structure_type is ChapterStructureType.SECTION:
+        return 2
+    return 1
 
 
 __all__ = [

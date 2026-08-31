@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
+import os
+import warnings
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
-import warnings
-import os
 
 warnings.filterwarnings(
     "ignore",
@@ -199,8 +200,31 @@ class PyMuPDFReader(PDFReader):
 
 
 def _bbox_from_raw(raw_bbox: Any) -> BoundingBox:
-    x0, y0, x1, y1 = raw_bbox
-    return BoundingBox(float(x0), float(y0), float(x1), float(y1))
+    try:
+        values = tuple(raw_bbox)
+    except TypeError as exc:
+        raise PDFReaderError("Invalid text bounding box: expected four coordinates") from exc
+
+    if len(values) != 4:
+        raise PDFReaderError("Invalid text bounding box: expected four coordinates")
+
+    coordinates: list[float] = []
+    for value in values:
+        try:
+            coordinate = float(value)
+        except (TypeError, ValueError) as exc:
+            raise PDFReaderError("Invalid text bounding box: coordinates must be numeric") from exc
+        if not math.isfinite(coordinate):
+            raise PDFReaderError("Invalid text bounding box: coordinates must be finite")
+        coordinates.append(coordinate)
+
+    x0, y0, x1, y1 = coordinates
+    return BoundingBox(
+        x0=min(x0, x1),
+        y0=min(y0, y1),
+        x1=max(x0, x1),
+        y1=max(y0, y1),
+    )
 
 
 def _float_or_none(value: Any) -> float | None:

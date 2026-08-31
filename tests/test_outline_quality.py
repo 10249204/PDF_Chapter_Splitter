@@ -30,6 +30,7 @@ def test_outline_quality_classifier_marks_non_primary_structures():
     assert classifier.classify("1.1 Motivation").structure_type is ChapterStructureType.SECTION
     assert classifier.classify("1.1.1 Detail").structure_type is ChapterStructureType.SUBSECTION
     assert classifier.classify("第一节 背景").structure_type is ChapterStructureType.SECTION
+    assert classifier.classify("第一编 现代视界").structure_type is ChapterStructureType.PART
     assert classifier.classify("Preface").structure_type is ChapterStructureType.FRONT_MATTER
     assert classifier.classify("References").structure_type is ChapterStructureType.BACK_MATTER
     assert classifier.classify("Appendix A").structure_type is ChapterStructureType.BACK_MATTER
@@ -74,3 +75,45 @@ def test_outline_candidate_detector_preserves_all_items_with_quality_metadata():
         any(evidence.evidence_type is ChapterEvidenceType.OUTLINE_STRUCTURE for evidence in candidate.evidences)
         for candidate in candidates
     )
+
+
+def test_outline_candidate_detector_uses_semantic_level_instead_of_outline_depth():
+    outline_items = [
+        OutlineItem("第一编 现代视界", 1, 0),
+        OutlineItem("第一章 移动的现代视界", 2, 5),
+        OutlineItem("第二章 康德之后的形而上学", 3, 12),
+        OutlineItem("第三章 后形而上学思想的主题", 2, 25),
+        OutlineItem("第二编 交往理性", 1, 40),
+        OutlineItem("第四章 交往行为理论", 4, 44),
+        OutlineItem("第五章 现代性的哲学话语", 2, 58),
+        OutlineItem("1.1 Motivation", 5, 70),
+    ]
+
+    candidates = OutlineCandidateDetector().detect(outline_items)
+
+    primary_chapters = [
+        candidate
+        for candidate in candidates
+        if candidate.structure_type is ChapterStructureType.PRIMARY_CHAPTER
+    ]
+    parts = [
+        candidate
+        for candidate in candidates
+        if candidate.structure_type is ChapterStructureType.PART
+    ]
+    sections = [
+        candidate
+        for candidate in candidates
+        if candidate.structure_type is ChapterStructureType.SECTION
+    ]
+
+    assert [candidate.title for candidate in primary_chapters] == [
+        "第一章 移动的现代视界",
+        "第二章 康德之后的形而上学",
+        "第三章 后形而上学思想的主题",
+        "第四章 交往行为理论",
+        "第五章 现代性的哲学话语",
+    ]
+    assert {candidate.level for candidate in primary_chapters} == {1}
+    assert {candidate.level for candidate in parts} == {1}
+    assert {candidate.level for candidate in sections} == {2}

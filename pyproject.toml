@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pdf-chapter-splitter"
-version = "0.1.0"
-description = "A Python desktop tool foundation for splitting PDFs by chapter."
+version = "1.0.0"
+description = "A Windows desktop tool for splitting PDFs by chapter."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "PyInstaller>=6.0",
     "pytest>=8.0",
 ]
 

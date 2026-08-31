@@ -151,6 +151,30 @@ class WorkflowSession:
 
         return self._append_confirmation_decision(ChapterConfirmationDecision.reject(candidate))
 
+    def accept_candidates(
+        self,
+        candidates: Iterable[ChapterCandidate],
+    ) -> ChapterConfirmationResult:
+        """Accept multiple candidates through one explicit user action."""
+
+        decisions = tuple(
+            ChapterConfirmationDecision.accept(candidate)
+            for candidate in candidates
+        )
+        return self._append_confirmation_decisions(decisions)
+
+    def reject_candidates(
+        self,
+        candidates: Iterable[ChapterCandidate],
+    ) -> ChapterConfirmationResult:
+        """Reject multiple candidates through one explicit user action."""
+
+        decisions = tuple(
+            ChapterConfirmationDecision.reject(candidate)
+            for candidate in candidates
+        )
+        return self._append_confirmation_decisions(decisions)
+
     def add_manual_chapter(
         self,
         title: str,
@@ -392,12 +416,18 @@ class WorkflowSession:
         self,
         decision: ChapterConfirmationDecision,
     ) -> ChapterConfirmationResult:
+        return self._append_confirmation_decisions((decision,))
+
+    def _append_confirmation_decisions(
+        self,
+        decisions: tuple[ChapterConfirmationDecision, ...],
+    ) -> ChapterConfirmationResult:
         self._ensure_state(
             SessionState.WAITING_FOR_CONFIRMATION,
             SessionState.READY_TO_RESOLVE,
             action="confirm candidates",
         )
-        self._confirmation_decisions = self._confirmation_decisions + (decision,)
+        self._confirmation_decisions = self._confirmation_decisions + decisions
         return self._apply_confirmation_decisions()
 
     def _apply_confirmation_decisions(self) -> ChapterConfirmationResult:

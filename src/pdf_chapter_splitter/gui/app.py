@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
+    QScrollArea,
     QSpinBox,
     QStyle,
     QTableWidget,
@@ -41,6 +42,8 @@ from pdf_chapter_splitter.application import (
     ManualSplitInput,
     ProgressEvent,
     SessionState,
+    WorkflowError,
+    WorkflowStage,
 )
 from pdf_chapter_splitter.gui.adapter import GuiWorkflowAdapter
 from pdf_chapter_splitter.gui.presenters import (
@@ -94,6 +97,8 @@ class GuiTaskRunner:
             self.messages.put(GuiTaskMessage("result", task()))
         except ApplicationError as exc:
             self.messages.put(GuiTaskMessage("error", exc))
+        except Exception as exc:
+            self.messages.put(GuiTaskMessage("error", exc))
 
 
 class PDFChapterSplitterWindow(QMainWindow):
@@ -111,8 +116,11 @@ class PDFChapterSplitterWindow(QMainWindow):
         self._selected_pdf_path: Path | None = None
         self._candidate_presentation_policy = CandidatePresentationPolicy()
         self._displayed_candidate_presentations: tuple[Any, ...] = ()
+        self._checked_candidate_keys: set[tuple[Any, ...]] = set()
+        self._editing_candidate: Any | None = None
         self._chapter_review_completed = False
         self._editing_confirmed_chapter_index: int | None = None
+        self._filling_candidates = False
 
         self._build_ui()
         self._connect_actions()
@@ -123,9 +131,18 @@ class PDFChapterSplitterWindow(QMainWindow):
         self._timer.start(80)
 
     def _build_ui(self) -> None:
-        root = QWidget(self)
-        self.setCentralWidget(root)
-        layout = QVBoxLayout(root)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setObjectName("mainScrollArea")
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setCentralWidget(self.scroll_area)
+
+        page_widget = QWidget(self.scroll_area)
+        page_widget.setObjectName("mainPageWidget")
+        self.scroll_area.setWidget(page_widget)
+
+        layout = QVBoxLayout(page_widget)
         layout.setSpacing(10)
 
         self.workflow_steps_label = QLabel("步骤 1 选择 PDF  →  步骤 2 确认章节  →  步骤 3 拆分 PDF")
@@ -161,23 +178,29 @@ class PDFChapterSplitterWindow(QMainWindow):
         candidate_header = QHBoxLayout()
         self.candidate_summary_label = QLabel("程序会在这里显示发现的章节。")
         self.candidate_summary_label.setObjectName("candidateSummaryLabel")
+        self.selected_candidate_count_label = QLabel("已勾选 0 个章节")
+        self.selected_candidate_count_label.setObjectName("selectedCandidateCountLabel")
         self.show_all_candidates_checkbox = QCheckBox("显示其他候选")
         self.show_all_candidates_checkbox.setObjectName("showAllCandidatesCheckBox")
         candidate_header.addWidget(self.candidate_summary_label)
         candidate_header.addStretch(1)
+        candidate_header.addWidget(self.selected_candidate_count_label)
         candidate_header.addWidget(self.show_all_candidates_checkbox)
         candidates_layout.addLayout(candidate_header)
 
-        self.candidates_table = QTableWidget(0, 4)
+        self.candidates_table = QTableWidget(0, 6)
         self.candidates_table.setObjectName("candidatesTable")
         self.candidates_table.setHorizontalHeaderLabels(
-            ["标题", "起始页", "识别可信度", "状态"]
+            ["✓", "标题", "起始页", "识别可信度", "识别来源", "状态"]
         )
         self.candidates_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.candidates_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.candidates_table.verticalHeader().setDefaultSectionSize(24)
+        self.candidates_table.setMinimumHeight(300)
+        self.candidates_table.setColumnWidth(0, 42)
         self.candidates_table.horizontalHeader().setStretchLastSection(True)
         candidates_layout.addWidget(self.candidates_table)
-        layout.addWidget(candidates_box, stretch=3)
+        layout.addWidget(candidates_box, stretch=5)
 
         edit_box = QGroupBox("章节编辑")
         edit_box.setObjectName("chapterEditGroupBox")
@@ -192,15 +215,23 @@ class PDFChapterSplitterWindow(QMainWindow):
         self.level_spin = QSpinBox()
         self.level_spin.setObjectName("manualLevelSpin")
         self.level_spin.setRange(1, 20)
-        self.accept_button = QPushButton("确认此章节")
-        self.accept_button.setObjectName("confirmSelectedChapterButton")
+        self.select_primary_button = QPushButton("全选主要章节")
+        self.select_primary_button.setObjectName("selectPrimaryChaptersButton")
+        self.accept_button = QPushButton("确认选中章节")
+        self.accept_button.setObjectName("confirmSelectedChaptersButton")
         self.accept_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
-        self.reject_button = QPushButton("忽略此章节")
-        self.reject_button.setObjectName("ignoreSelectedChapterButton")
+        self.edit_candidate_button = QPushButton("编辑章节")
+        self.edit_candidate_button.setObjectName("editSelectedChapterButton")
+        self.save_candidate_edit_button = QPushButton("保存修改")
+        self.save_candidate_edit_button.setObjectName("saveCandidateEditButton")
+        self.cancel_edit_button = QPushButton("取消")
+        self.cancel_edit_button.setObjectName("cancelChapterEditButton")
+        self.reject_button = QPushButton("拒绝选中")
+        self.reject_button.setObjectName("rejectSelectedChaptersButton")
         self.reject_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
         self.add_manual_button = QPushButton("手动添加章节")
         self.add_manual_button.setObjectName("addManualChapterButton")
-        self.update_confirmed_button = QPushButton("保存修改")
+        self.update_confirmed_button = QPushButton("保存已确认修改")
         self.update_confirmed_button.setObjectName("updateConfirmedChapterButton")
         self.confirm_button = QPushButton("章节检查完成，进入拆分")
         self.confirm_button.setObjectName("completeChapterReviewButton")
@@ -212,11 +243,15 @@ class PDFChapterSplitterWindow(QMainWindow):
         edit_layout.addWidget(self.page_spin, 2, 1)
         edit_layout.addWidget(QLabel("章节层级"), 2, 2)
         edit_layout.addWidget(self.level_spin, 2, 3)
-        edit_layout.addWidget(self.accept_button, 3, 0)
-        edit_layout.addWidget(self.reject_button, 3, 1)
-        edit_layout.addWidget(self.add_manual_button, 3, 2)
-        edit_layout.addWidget(self.update_confirmed_button, 3, 3)
-        edit_layout.addWidget(self.confirm_button, 4, 0, 1, 4)
+        edit_layout.addWidget(self.select_primary_button, 3, 0)
+        edit_layout.addWidget(self.accept_button, 3, 1)
+        edit_layout.addWidget(self.edit_candidate_button, 3, 2)
+        edit_layout.addWidget(self.reject_button, 3, 3)
+        edit_layout.addWidget(self.save_candidate_edit_button, 4, 0)
+        edit_layout.addWidget(self.cancel_edit_button, 4, 1)
+        edit_layout.addWidget(self.add_manual_button, 4, 2)
+        edit_layout.addWidget(self.update_confirmed_button, 4, 3)
+        edit_layout.addWidget(self.confirm_button, 5, 0, 1, 4)
         layout.addWidget(edit_box)
 
         confirmed_header = QHBoxLayout()
@@ -240,8 +275,10 @@ class PDFChapterSplitterWindow(QMainWindow):
         self.chapters_table.setHorizontalHeaderLabels(["章节", "起始页", "层级", "状态"])
         self.chapters_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.chapters_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.chapters_table.verticalHeader().setDefaultSectionSize(24)
+        self.chapters_table.setMinimumHeight(240)
         self.chapters_table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self.chapters_table, stretch=2)
+        layout.addWidget(self.chapters_table, stretch=4)
 
         output_box = QGroupBox("拆分 PDF")
         output_layout = QFormLayout(output_box)
@@ -306,10 +343,15 @@ class PDFChapterSplitterWindow(QMainWindow):
         self.choose_output_button.clicked.connect(self._choose_output_directory)
         self.show_all_candidates_checkbox.toggled.connect(self._refresh_from_session)
         self.candidates_table.itemSelectionChanged.connect(self._load_selected_candidate)
+        self.candidates_table.itemChanged.connect(self._candidate_checkbox_changed)
         self.chapters_table.itemSelectionChanged.connect(self._show_selected_chapter_source)
         self.evidence_group_box.toggled.connect(self.evidence_detail.setVisible)
-        self.accept_button.clicked.connect(self._accept_selected_candidate)
-        self.reject_button.clicked.connect(self._reject_selected_candidate)
+        self.select_primary_button.clicked.connect(self._select_primary_candidates)
+        self.accept_button.clicked.connect(self._accept_checked_candidates)
+        self.edit_candidate_button.clicked.connect(self._edit_selected_candidate)
+        self.save_candidate_edit_button.clicked.connect(self._save_candidate_edit)
+        self.cancel_edit_button.clicked.connect(self._cancel_chapter_edit)
+        self.reject_button.clicked.connect(self._reject_selected_candidates)
         self.add_manual_button.clicked.connect(self._add_manual_chapter)
         self.update_confirmed_button.clicked.connect(self._update_confirmed_chapter)
         self.edit_confirmed_button.clicked.connect(self._edit_selected_confirmed_chapter)
@@ -324,6 +366,8 @@ class PDFChapterSplitterWindow(QMainWindow):
 
     def start_analyze(self, input_path: Path) -> None:
         self._selected_pdf_path = input_path
+        self._checked_candidate_keys.clear()
+        self._editing_candidate = None
         self._chapter_review_completed = False
         self._editing_confirmed_chapter_index = None
         self._set_busy(True)
@@ -341,38 +385,81 @@ class PDFChapterSplitterWindow(QMainWindow):
         self.title_edit.setText(candidate.title)
         self.page_spin.setValue(candidate.start_page_index + 1)
         self.level_spin.setValue(candidate.level)
+        self._editing_candidate = None
         self._editing_confirmed_chapter_index = None
-        self.editing_candidate_label.setText(f"正在编辑：{candidate.title}")
+        self.editing_candidate_label.setText(f"正在查看：{candidate.title}")
         view_model = format_candidate(candidate)
         self.evidence_detail.setPlainText(view_model.evidence_summary)
+        self._update_action_state()
 
-    def _accept_selected_candidate(self) -> None:
+    def _accept_checked_candidates(self) -> None:
+        candidates = self._checked_candidates()
+        if not candidates:
+            return
+        try:
+            self.adapter.accept_candidates(candidates)
+        except ApplicationError as exc:
+            self._show_error(exc)
+            return
+        self._checked_candidate_keys.clear()
+        self._chapter_review_completed = False
+        self._refresh_from_session()
+
+    def _reject_selected_candidates(self) -> None:
+        candidates = self._checked_candidates()
+        selected_candidate = self._selected_candidate()
+        if not candidates and selected_candidate is not None:
+            candidates = (selected_candidate,)
+        if not candidates:
+            return
+        try:
+            self.adapter.reject_candidates(candidates)
+        except ApplicationError as exc:
+            self._show_error(exc)
+            return
+        for candidate in candidates:
+            self._checked_candidate_keys.discard(_candidate_key(candidate))
+        self._chapter_review_completed = False
+        self._refresh_from_session()
+
+    def _edit_selected_candidate(self) -> None:
         candidate = self._selected_candidate()
         if candidate is None:
             return
+        self._editing_candidate = candidate
+        self._editing_confirmed_chapter_index = None
+        self.title_edit.setText(candidate.title)
+        self.page_spin.setValue(candidate.start_page_index + 1)
+        self.level_spin.setValue(candidate.level)
+        self.editing_candidate_label.setText(f"正在编辑：{candidate.title}")
+        self._update_action_state()
+
+    def _save_candidate_edit(self) -> None:
+        if self._editing_candidate is None:
+            return
+        title = self.title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "标题缺失", "请先输入章节标题。")
+            return
         try:
             self.adapter.accept_candidate(
-                candidate,
-                title=self.title_edit.text().strip() or None,
+                self._editing_candidate,
+                title=title,
                 start_page_number=self.page_spin.value(),
             )
         except ApplicationError as exc:
             self._show_error(exc)
             return
+        self._checked_candidate_keys.discard(_candidate_key(self._editing_candidate))
+        self._editing_candidate = None
         self._chapter_review_completed = False
         self._refresh_from_session()
 
-    def _reject_selected_candidate(self) -> None:
-        candidate = self._selected_candidate()
-        if candidate is None:
-            return
-        try:
-            self.adapter.reject_candidate(candidate)
-        except ApplicationError as exc:
-            self._show_error(exc)
-            return
-        self._chapter_review_completed = False
-        self._refresh_from_session()
+    def _cancel_chapter_edit(self) -> None:
+        self._editing_candidate = None
+        self._editing_confirmed_chapter_index = None
+        self._load_selected_candidate()
+        self._update_action_state()
 
     def _add_manual_chapter(self) -> None:
         title = self.title_edit.text().strip()
@@ -390,6 +477,7 @@ class PDFChapterSplitterWindow(QMainWindow):
             return
         self._chapter_review_completed = False
         self._editing_confirmed_chapter_index = None
+        self._editing_candidate = None
         self._refresh_from_session()
 
     def _complete_chapter_review(self) -> None:
@@ -404,6 +492,7 @@ class PDFChapterSplitterWindow(QMainWindow):
         if selected is None:
             return
         index, chapter = selected
+        self._editing_candidate = None
         self._editing_confirmed_chapter_index = index
         self.title_edit.setText(chapter.title)
         self.page_spin.setValue(chapter.gui_page_number)
@@ -429,6 +518,7 @@ class PDFChapterSplitterWindow(QMainWindow):
             return
         self._chapter_review_completed = False
         self._editing_confirmed_chapter_index = None
+        self._editing_candidate = None
         self._refresh_from_session()
 
     def _remove_selected_confirmed_chapter(self) -> None:
@@ -442,6 +532,7 @@ class PDFChapterSplitterWindow(QMainWindow):
             return
         self._chapter_review_completed = False
         self._editing_confirmed_chapter_index = None
+        self._editing_candidate = None
         self._refresh_from_session()
 
     def _start_split(self) -> None:
@@ -464,7 +555,9 @@ class PDFChapterSplitterWindow(QMainWindow):
                 self._show_progress(message.payload)
             elif message.kind == "error":
                 self._set_busy(False)
-                self._show_error(message.payload)
+                error = self._application_error_from_task_exception(message.payload)
+                self._show_error(error)
+                self._mark_session_failed(error)
                 self._refresh_from_session()
             elif message.kind == "result":
                 self._set_busy(False)
@@ -490,6 +583,22 @@ class PDFChapterSplitterWindow(QMainWindow):
             detail = f"{detail}；原因：{view_model.cause_label}"
         self.error_label.setText(f"{view_model.message}（{detail}）")
 
+    def _application_error_from_task_exception(self, error: BaseException) -> ApplicationError:
+        if isinstance(error, ApplicationError):
+            return error
+        return WorkflowError(
+            _task_error_message_for_session_state(self.adapter.session.state),
+            stage=_stage_for_current_session_state(self.adapter.session.state),
+            cause=error,
+        )
+
+    def _mark_session_failed(self, error: ApplicationError) -> None:
+        session = self.adapter.session
+        if hasattr(session, "error"):
+            session.error = error
+        if hasattr(session, "state"):
+            session.state = SessionState.FAILED
+
     def _refresh_from_session(self) -> None:
         session = self.adapter.session
         self.status_label.setText(f"状态：{session.state.value}")
@@ -510,6 +619,7 @@ class PDFChapterSplitterWindow(QMainWindow):
         self._fill_chapters_table(tuple(session.confirmed_chapters))
         self._update_result_label()
         self._update_action_state()
+        self._update_checked_count_label()
 
     def _fill_candidates_table(self, candidates: tuple[Any, ...]) -> None:
         presentations = self._candidate_presentation_policy.present(
@@ -519,6 +629,12 @@ class PDFChapterSplitterWindow(QMainWindow):
         self._displayed_candidate_presentations = tuple(
             presentation for presentation in presentations if presentation.visible
         )
+        visible_keys = {
+            _candidate_key(presentation.candidate)
+            for presentation in self._displayed_candidate_presentations
+        }
+        self._checked_candidate_keys &= visible_keys
+        self._filling_candidates = True
         self.candidates_table.setRowCount(len(self._displayed_candidate_presentations))
         for row, presentation in enumerate(self._displayed_candidate_presentations):
             candidate = presentation.candidate
@@ -527,14 +643,31 @@ class PDFChapterSplitterWindow(QMainWindow):
                 accepted=self._candidate_is_accepted(candidate),
             )
             values = [
+                "",
                 view_model.title,
                 view_model.page_label,
                 view_model.confidence_label,
+                view_model.sources_label,
                 _candidate_status_label(presentation, accepted=view_model.accepted),
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setFlags(
+                        Qt.ItemFlag.ItemIsEnabled
+                        | Qt.ItemFlag.ItemIsSelectable
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                    )
+                    item.setCheckState(
+                        Qt.CheckState.Checked
+                        if _candidate_key(candidate) in self._checked_candidate_keys
+                        else Qt.CheckState.Unchecked
+                    )
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                else:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.candidates_table.setItem(row, column, item)
+        self._filling_candidates = False
 
     def _update_analysis_summary(self, analysis_result: Any) -> None:
         summary = getattr(analysis_result, "summary", None)
@@ -589,14 +722,26 @@ class PDFChapterSplitterWindow(QMainWindow):
         }
         can_confirm = state in {SessionState.WAITING_FOR_CONFIRMATION, SessionState.READY_TO_RESOLVE}
         has_confirmed_chapters = bool(tuple(self.adapter.session.confirmed_chapters))
+        checked_candidates = self._checked_candidates()
+        selected_candidate = self._selected_candidate()
         can_execute = (
             state is SessionState.READY_TO_RESOLVE
             and has_confirmed_chapters
             and self._chapter_review_completed
         )
         self.select_pdf_button.setEnabled(not is_busy)
-        self.accept_button.setEnabled(can_confirm and self._selected_candidate() is not None)
-        self.reject_button.setEnabled(can_confirm and self._selected_candidate() is not None)
+        self.select_primary_button.setEnabled(can_confirm and bool(self._displayed_candidate_presentations))
+        self.accept_button.setEnabled(can_confirm and bool(checked_candidates))
+        self.edit_candidate_button.setEnabled(can_confirm and selected_candidate is not None)
+        self.save_candidate_edit_button.setEnabled(can_confirm and self._editing_candidate is not None)
+        self.cancel_edit_button.setEnabled(
+            can_confirm
+            and (
+                self._editing_candidate is not None
+                or self._editing_confirmed_chapter_index is not None
+            )
+        )
+        self.reject_button.setEnabled(can_confirm and (bool(checked_candidates) or selected_candidate is not None))
         self.add_manual_button.setEnabled(can_confirm)
         self.update_confirmed_button.setEnabled(
             state is SessionState.READY_TO_RESOLVE
@@ -606,10 +751,15 @@ class PDFChapterSplitterWindow(QMainWindow):
         self.remove_confirmed_button.setEnabled(has_confirmed_chapters)
         self.confirm_button.setEnabled(state is SessionState.READY_TO_RESOLVE and has_confirmed_chapters)
         self.split_button.setEnabled(can_execute and not is_busy)
+        self._update_checked_count_label()
 
     def _set_busy(self, is_busy: bool) -> None:
         self.select_pdf_button.setEnabled(not is_busy)
+        self.select_primary_button.setEnabled(not is_busy)
         self.accept_button.setEnabled(not is_busy)
+        self.edit_candidate_button.setEnabled(not is_busy)
+        self.save_candidate_edit_button.setEnabled(not is_busy)
+        self.cancel_edit_button.setEnabled(not is_busy)
         self.reject_button.setEnabled(not is_busy)
         self.add_manual_button.setEnabled(not is_busy)
         self.update_confirmed_button.setEnabled(not is_busy)
@@ -624,6 +774,36 @@ class PDFChapterSplitterWindow(QMainWindow):
         if row < 0 or row >= len(self._displayed_candidate_presentations):
             return None
         return self._displayed_candidate_presentations[row].candidate
+
+    def _checked_candidates(self) -> tuple[Any, ...]:
+        return tuple(
+            presentation.candidate
+            for presentation in self._displayed_candidate_presentations
+            if _candidate_key(presentation.candidate) in self._checked_candidate_keys
+        )
+
+    def _candidate_checkbox_changed(self, item: QTableWidgetItem) -> None:
+        if self._filling_candidates or item.column() != 0:
+            return
+        row = item.row()
+        if row < 0 or row >= len(self._displayed_candidate_presentations):
+            return
+        candidate = self._displayed_candidate_presentations[row].candidate
+        key = _candidate_key(candidate)
+        if item.checkState() == Qt.CheckState.Checked:
+            self._checked_candidate_keys.add(key)
+        else:
+            self._checked_candidate_keys.discard(key)
+        self._chapter_review_completed = False
+        self._update_action_state()
+
+    def _select_primary_candidates(self) -> None:
+        for presentation in self._displayed_candidate_presentations:
+            candidate = presentation.candidate
+            structure_value = getattr(getattr(candidate, "structure_type", None), "value", "")
+            if structure_value == "primary_chapter":
+                self._checked_candidate_keys.add(_candidate_key(candidate))
+        self._refresh_from_session()
 
     def _selected_confirmed_chapter_with_index(self) -> tuple[int, Any] | None:
         selected_rows = self.chapters_table.selectionModel().selectedRows()
@@ -675,6 +855,10 @@ class PDFChapterSplitterWindow(QMainWindow):
                 return True
         return False
 
+    def _update_checked_count_label(self) -> None:
+        count = len(self._checked_candidates())
+        self.selected_candidate_count_label.setText(f"已勾选 {count} 个章节")
+
 
 def _candidate_status_label(presentation: Any, *, accepted: bool) -> str:
     if accepted:
@@ -682,6 +866,35 @@ def _candidate_status_label(presentation: Any, *, accepted: bool) -> str:
     if presentation.hidden_by_default:
         return "建议核对"
     return "推荐"
+
+
+def _candidate_key(candidate: Any) -> tuple[Any, ...]:
+    return (
+        candidate.title,
+        candidate.start_page_index,
+        tuple(getattr(source, "value", str(source)) for source in candidate.sources),
+        tuple(candidate.original_titles),
+    )
+
+
+def _task_error_message_for_session_state(state: SessionState) -> str:
+    if state is SessionState.ANALYZING:
+        return "分析 PDF 时发生错误"
+    if state in {SessionState.RESOLVING, SessionState.EXECUTING}:
+        return "拆分 PDF 时发生错误"
+    return "操作失败"
+
+
+def _stage_for_current_session_state(state: SessionState) -> WorkflowStage:
+    if state is SessionState.ANALYZING:
+        return WorkflowStage.ANALYZING
+    if state is SessionState.CONFIRMING:
+        return WorkflowStage.CONFIRMING
+    if state is SessionState.RESOLVING:
+        return WorkflowStage.RESOLVING_BOUNDARIES
+    if state is SessionState.EXECUTING:
+        return WorkflowStage.SPLITTING
+    return WorkflowStage.FAILED
 
 
 def _quality_banner_text(view_model: Any) -> str:

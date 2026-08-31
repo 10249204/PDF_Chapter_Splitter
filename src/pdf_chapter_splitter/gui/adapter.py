@@ -52,6 +52,12 @@ class GuiWorkflowAdapter:
     def reject_candidate(self, candidate: Any):
         return self.session.reject_candidate(candidate)
 
+    def accept_candidates(self, candidates: Iterable[Any]):
+        return self.session.accept_candidates(tuple(candidates))
+
+    def reject_candidates(self, candidates: Iterable[Any]):
+        return self.session.reject_candidates(tuple(candidates))
+
     def add_manual_chapter(
         self,
         title: str,

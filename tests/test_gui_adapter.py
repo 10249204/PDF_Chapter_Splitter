@@ -32,6 +32,16 @@ def test_adapter_accept_candidate_delegates_to_session():
     assert session.calls == [("accept_candidate", candidate, "Intro", 2)]
 
 
+def test_adapter_accept_candidates_delegates_to_session():
+    session = FakeSession()
+    adapter = GuiWorkflowAdapter(session=session)
+    candidates = (_candidate("Chapter 1", 0), _candidate("Chapter 2", 4))
+
+    adapter.accept_candidates(candidates)
+
+    assert session.calls == [("accept_candidates", candidates)]
+
+
 def test_adapter_reject_candidate_delegates_to_session():
     session = FakeSession()
     adapter = GuiWorkflowAdapter(session=session)
@@ -40,6 +50,16 @@ def test_adapter_reject_candidate_delegates_to_session():
     adapter.reject_candidate(candidate)
 
     assert session.calls == [("reject_candidate", candidate)]
+
+
+def test_adapter_reject_candidates_delegates_to_session():
+    session = FakeSession()
+    adapter = GuiWorkflowAdapter(session=session)
+    candidates = (_candidate("Preface", 0), _candidate("Contents", 1))
+
+    adapter.reject_candidates(candidates)
+
+    assert session.calls == [("reject_candidates", candidates)]
 
 
 def test_adapter_confirm_delegates_to_session():
@@ -153,6 +173,12 @@ class FakeSession:
 
     def reject_candidate(self, candidate):
         self.calls.append(("reject_candidate", candidate))
+
+    def accept_candidates(self, candidates):
+        self.calls.append(("accept_candidates", tuple(candidates)))
+
+    def reject_candidates(self, candidates):
+        self.calls.append(("reject_candidates", tuple(candidates)))
 
     def confirm(self, decisions):
         self.calls.append(("confirm", tuple(decisions)))

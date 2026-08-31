@@ -11,8 +11,10 @@ from pdf_chapter_splitter.pdf.errors import (
     PDFOpenError,
     PDFPageIndexError,
     PDFPasswordError,
+    PDFReaderError,
 )
 from pdf_chapter_splitter.pdf.models import OutlineItem, TextBlock
+from pdf_chapter_splitter.pdf.pymupdf_reader import _bbox_from_raw
 
 
 def test_reader_opens_real_pdf_and_reports_page_count(text_pdf_path: Path):
@@ -87,6 +89,35 @@ def test_reader_gets_structured_text_blocks(text_pdf_path: Path):
     assert chapter_span.bbox.y1 > chapter_span.bbox.y0
     assert chapter_span.font_size == pytest.approx(18.0)
     assert chapter_span.font_name
+
+
+@pytest.mark.parametrize(
+    ("raw_bbox", "expected"),
+    [
+        ((10, 20, 100, 200), (10, 20, 100, 200)),
+        ((100, 20, 10, 200), (10, 20, 100, 200)),
+        ((10, 200, 100, 20), (10, 20, 100, 200)),
+        ((100, 200, 10, 20), (10, 20, 100, 200)),
+    ],
+)
+def test_reader_normalizes_pymupdf_bbox_coordinate_order(raw_bbox, expected):
+    bbox = _bbox_from_raw(raw_bbox)
+
+    assert (bbox.x0, bbox.y0, bbox.x1, bbox.y1) == expected
+
+
+@pytest.mark.parametrize(
+    "raw_bbox",
+    [
+        (10, 20, 100),
+        (10, 20, 100, float("nan")),
+        (10, 20, float("inf"), 200),
+        (10, 20, "right", 200),
+    ],
+)
+def test_reader_rejects_unsafe_pymupdf_bbox_values(raw_bbox):
+    with pytest.raises(PDFReaderError, match="Invalid text bounding box"):
+        _bbox_from_raw(raw_bbox)
 
 
 def test_reader_gets_page_size_with_zero_based_page_index(text_pdf_path: Path):
